@@ -98,6 +98,7 @@ jobs:
 
     - name: Set Resolution
       shell: pwsh
+      continue-on-error: true
       env:
         RESOLUTION: ${{ github.event.inputs.resolution }}
       run: |
@@ -107,25 +108,16 @@ jobs:
         $w = [int]$parts[0]
         $h = [int]$parts[1]
 
-        Write-Host "Baixando QRes..." -ForegroundColor Cyan
         try {
           Invoke-WebRequest -Uri "https://github.com/MathewSachin/QRes/raw/master/QRes.exe" -OutFile "$env:TEMP\QRes.exe" -UseBasicParsing
-          Write-Host "Aplicando resolucao ${w}x${h}..." -ForegroundColor Cyan
           & "$env:TEMP\QRes.exe" /x:$w /y:$h
           Start-Sleep -Seconds 2
           Write-Host "Resolucao aplicada com QRes." -ForegroundColor Green
         } catch {
-          Write-Host "QRes falhou: $_. Tentando metodo alternativo..." -ForegroundColor Yellow
-          try {
-            Add-Type -AssemblyName System.Windows.Forms
-            $display = [System.Windows.Forms.Screen]::PrimaryScreen
-            Write-Host "Resolucao atual: $($display.Bounds.Width)x$($display.Bounds.Height)" -ForegroundColor Yellow
-          } catch {
-            Write-Host "Nao foi possivel aplicar resolucao customizada." -ForegroundColor Red
-          }
+          Write-Host "QRes falhou. Runner sem display virtual, resolucao fica no padrao." -ForegroundColor Yellow
         }
 
-        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -Value 96 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+        New-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -Value 96 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
 
     - name: Restore Backup
       if: ${{ github.event.inputs.restore_backup == 'yes' }}
