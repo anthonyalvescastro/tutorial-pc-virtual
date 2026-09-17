@@ -1,4 +1,4 @@
-name: PC criado pelo @alves7.pcm
+name: PC Virtual @alves7.pcm
 
 on:
   workflow_dispatch:
@@ -8,124 +8,402 @@ on:
         required: true
         default: '1'
         type: string
+      restore_backup:
+        description: 'Restaurar backup anterior?'
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      session_hours:
+        description: 'Horas de sessao (1-6)'
+        required: true
+        default: '6'
+        type: string
+      resolution:
+        description: 'Resolucao'
+        required: true
+        default: '1920x1080'
+        type: choice
+        options:
+          - '1920x1080'
+          - '2560x1440'
+          - '3840x2160'
+
+permissions:
+  contents: write
 
 jobs:
   deploy-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
-    
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
-      
+
     - name: System Information
+      shell: pwsh
       run: |
-        Write-Host "=== ENIGMANO RDP DEPLOYMENT ===" -ForegroundColor Green
-        Write-Host "Instance Number: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
-        Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Yellow
-        Write-Host "Workflow: $env:GITHUB_WORKFLOW" -ForegroundColor Yellow
-        
-        Write-Host "`n=== SYSTEM SPECIFICATIONS ===" -ForegroundColor Cyan
+        Write-Host "=== PC VIRTUAL DEPLOYMENT ===" -ForegroundColor Green
+        Write-Host "Instance: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
+        Write-Host "Restore Backup: ${{ github.event.inputs.restore_backup }}" -ForegroundColor Yellow
+        Write-Host "Session Hours: ${{ github.event.inputs.session_hours }}" -ForegroundColor Yellow
+        Write-Host "Resolution: ${{ github.event.inputs.resolution }}" -ForegroundColor Yellow
+        Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Cyan
+        Write-Host ""
         Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory
-        Get-WmiObject -Class Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
-        
-    - name: Enable RDP
+        Get-WmiObject Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+    - name: Apply Performance Tweaks
+      shell: pwsh
       run: |
-        Write-Host "Enabling Remote Desktop..." -ForegroundColor Green
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
-        
-    - name: Create User Account
+        Write-Host "Aplicando tweaks de desempenho..." -ForegroundColor Cyan
+
+        powercfg -setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value 0 -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value 0 -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0 -ErrorAction SilentlyContinue
+
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization" -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization" -Name "NoChangingWallPaper" -Value 1 -Force -ErrorAction SilentlyContinue
+
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Force -ErrorAction SilentlyContinue | Out-Null
+        New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "fNoRemoteDesktopWallpaper" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+        New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "SelectTransport" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+        New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "MaxMonitors" -Value 4 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+
+        Write-Host "Tweaks aplicados." -ForegroundColor Green
+
+    - name: Optimize Network
+      shell: pwsh
       run: |
-        Write-Host "Setting up user account..." -ForegroundColor Green
-        $Password = ConvertTo-SecureString "P@ssw0rd!" -AsPlainText -Force
-        Set-LocalUser -Name "runneradmin" -Password $Password
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
-        Write-Host "Username: runneradmin" -ForegroundColor Yellow
-        Write-Host "Password: P@ssw0rd!" -ForegroundColor Yellow
-        
-    - name: Install Tailscale (Silent)
+        Write-Host "Otimizando rede..." -ForegroundColor Cyan
+
+        New-NetFirewallRule -DisplayName "Tailscale UDP" -Direction Inbound -Protocol UDP -LocalPort 41641 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+        New-NetFirewallRule -DisplayName "Tailscale TCP" -Direction Inbound -Protocol TCP -LocalPort 41641 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+
+        netsh int tcp set global rsc=enabled 2>$null
+        netsh int tcp set global autotuninglevel=normal 2>$null
+
+        $ifs = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+        foreach ($i in $ifs) {
+          New-ItemProperty -Path $i.PSPath -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+          New-ItemProperty -Path $i.PSPath -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+
+        Write-Host "Rede otimizada." -ForegroundColor Green
+
+    - name: Set Resolution
+      shell: pwsh
+      env:
+        RESOLUTION: ${{ github.event.inputs.resolution }}
       run: |
-        Write-Host "Downloading Tailscale..." -ForegroundColor Green
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-        $installerPath = "$env:TEMP\tailscale.msi"
-        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-        Write-Host "Installing Tailscale silently..." -ForegroundColor Green
-        Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
-        Remove-Item $installerPath -Force
-        Write-Host "Tailscale installed successfully!" -ForegroundColor Green
-        
-    - name: Start Tailscale
-      run: |
-        Write-Host "Starting Tailscale..." -ForegroundColor Green
-        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "enigmano-${{ github.run_id }}"
-        Start-Sleep -Seconds 15
-        
-    - name: Get Tailscale IP
-      run: |
-        $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-        Write-Host "Tailscale IP: $tsIP" -ForegroundColor Green
-        echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-        
-    - name: Install Google Chrome (Direct)
-      run: |
-        Write-Host "Downloading Google Chrome..." -ForegroundColor Green
-        $chromeUrl = "https://dl.google.com/chrome/install/latest/chrome_installer.exe"
-        $installerPath = "$env:TEMP\chrome_installer.exe"
-        Invoke-WebRequest -Uri $chromeUrl -OutFile $installerPath
-        Write-Host "Installing Google Chrome silently..." -ForegroundColor Green
-        Start-Process -FilePath $installerPath -ArgumentList "/silent /install" -Wait
-        Remove-Item $installerPath -Force
-        Write-Host "Google Chrome installed!" -ForegroundColor Green
-        
-    - name: Install 7-Zip (Direct)
-      run: |
-        Write-Host "Downloading 7-Zip..." -ForegroundColor Green
-        $zipUrl = "https://www.7-zip.org/a/7z2409-x64.exe"
-        $installerPath = "$env:TEMP\7z-installer.exe"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $installerPath
-        Write-Host "Installing 7-Zip silently..." -ForegroundColor Green
-        Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-        Remove-Item $installerPath -Force
-        Write-Host "7-Zip installed!" -ForegroundColor Green
-        
-    - name: Connection Details
-      run: |
-        Write-Host "`n=== CONNECTION DETAILS (TAILSCALE) ===" -ForegroundColor Green
-        Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-        Write-Host "║         ENIGMANO RDP ACCESS          ║" -ForegroundColor Cyan  
-        Write-Host "╠══════════════════════════════════════╣" -ForegroundColor Cyan
-        Write-Host "║ Host: $env:TAILSCALE_IP              ║" -ForegroundColor White
-        Write-Host "║ Username: runneradmin                ║" -ForegroundColor White
-        Write-Host "║ Password: P@ssw0rd!                  ║" -ForegroundColor White
-        Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-        
-        Write-Host "`nConnection Instructions:" -ForegroundColor Yellow
-        Write-Host "1. Install Tailscale on your device (phone, tablet, Mac, Linux)" -ForegroundColor White
-        Write-Host "2. Log in with the same Tailscale account" -ForegroundColor White
-        Write-Host "3. Open Remote Desktop app and enter the IP above" -ForegroundColor White
-        Write-Host "4. Use the provided credentials" -ForegroundColor White
-        
-    - name: Keep Session Alive
-      run: |
-        Write-Host "`n=== SESSION ACTIVE ===" -ForegroundColor Green
-        Write-Host "EnigMano RDP instance is now running!" -ForegroundColor Cyan
-        Write-Host "Instance will remain active for up to 6 hours." -ForegroundColor Yellow
-        Write-Host "Do not close this window to maintain the connection." -ForegroundColor Red
-        
-        $counter = 0
-        while ($true) {
-          $counter++
-          Write-Host "Session active - Heartbeat #$counter ($(Get-Date))" -ForegroundColor Green
-          
-          $tsStatus = & "C:\Program Files\Tailscale\tailscale.exe" status
-          if ($tsStatus -match "active") {
-            Write-Host "Tailscale status: ACTIVE" -ForegroundColor Green
-          } else {
-            Write-Host "Tailscale status: ERROR - Restarting..." -ForegroundColor Red
-            & "C:\Program Files\Tailscale\tailscale.exe" up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname "enigmano-${{ github.run_id }}"
+        Write-Host "Configurando resolucao: $env:RESOLUTION" -ForegroundColor Cyan
+
+        $parts = $env:RESOLUTION.Split("x")
+        $w = [int]$parts[0]
+        $h = [int]$parts[1]
+
+        Write-Host "Baixando QRes..." -ForegroundColor Cyan
+        try {
+          Invoke-WebRequest -Uri "https://github.com/MathewSachin/QRes/raw/master/QRes.exe" -OutFile "$env:TEMP\QRes.exe" -UseBasicParsing
+          Write-Host "Aplicando resolucao ${w}x${h}..." -ForegroundColor Cyan
+          & "$env:TEMP\QRes.exe" /x:$w /y:$h
+          Start-Sleep -Seconds 2
+          Write-Host "Resolucao aplicada com QRes." -ForegroundColor Green
+        } catch {
+          Write-Host "QRes falhou: $_. Tentando metodo alternativo..." -ForegroundColor Yellow
+          try {
+            Add-Type -AssemblyName System.Windows.Forms
+            $display = [System.Windows.Forms.Screen]::PrimaryScreen
+            Write-Host "Resolucao atual: $($display.Bounds.Width)x$($display.Bounds.Height)" -ForegroundColor Yellow
+          } catch {
+            Write-Host "Nao foi possivel aplicar resolucao customizada." -ForegroundColor Red
           }
-          
+        }
+
+        Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -Value 96 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+
+    - name: Restore Backup
+      if: ${{ github.event.inputs.restore_backup == 'yes' }}
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        Write-Host "Procurando backup..." -ForegroundColor Cyan
+        $latest = gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+        if ([string]::IsNullOrWhiteSpace($latest)) {
+          Write-Host "Nenhum backup encontrado." -ForegroundColor Yellow
+          exit 0
+        }
+        Write-Host "Restaurando: $latest" -ForegroundColor Green
+        $dir = "$env:TEMP\restore"
+        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+        gh release download $latest --pattern "backup.zip" --dir $dir --clobber
+        if (-not (Test-Path "$dir\backup.zip")) { exit 0 }
+        Expand-Archive -Path "$dir\backup.zip" -DestinationPath $dir -Force
+
+        $mapa = @("Backup","Desktop","Documents","Downloads","Pictures","Videos","Music")
+        foreach ($p in $mapa) {
+          $origem = "$dir\$p"
+          if (Test-Path $origem) {
+            $destino = "$env:USERPROFILE\$p"
+            New-Item -ItemType Directory -Force -Path $destino | Out-Null
+            Copy-Item -Path "$origem\*" -Destination $destino -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "  Restaurado: $p" -ForegroundColor Green
+          }
+        }
+
+        $info = "$env:USERPROFILE\Backup\.wallpaper-info.txt"
+        if (Test-Path $info) {
+          $wallpaper = (Get-Content $info -Raw).Trim()
+          if (Test-Path $wallpaper) {
+            Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "WallPaper" -Value $wallpaper -Force -ErrorAction SilentlyContinue
+            rundll32.exe user32.dll,UpdatePerUserSystemParameters 2>$null
+            Write-Host "  Wallpaper restaurado: $wallpaper" -ForegroundColor Green
+          }
+        }
+
+    - name: Enable RDP
+      shell: pwsh
+      run: |
+        Write-Host "Habilitando RDP..." -ForegroundColor Green
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "PortNumber" -Value 3389
+        Restart-Service TermService -Force
+        Write-Host "RDP ativo na porta 3389." -ForegroundColor Green
+
+    - name: Create User Account
+      shell: pwsh
+      env:
+        RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        RDP_USER: ${{ secrets.RDP_USER }}
+      run: |
+        Write-Host "Criando usuario..." -ForegroundColor Green
+        $user = if ($env:RDP_USER) { $env:RDP_USER } else { "pcuser" }
+        $pass = if ($env:RDP_PASSWORD) { $env:RDP_PASSWORD } else { "P@ssw0rd!2024" }
+        $sec = ConvertTo-SecureString $pass -AsPlainText -Force
+
+        if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
+          Set-LocalUser -Name $user -Password $sec
+        } else {
+          New-LocalUser -Name $user -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
+        }
+        Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
+        Write-Host "Usuario '$user' criado." -ForegroundColor Green
+
+    - name: Install Tailscale
+      shell: pwsh
+      run: |
+        Write-Host "Baixando Tailscale..." -ForegroundColor Green
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\ts.msi"
+        Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\ts.msi`" /quiet /norestart" -Wait
+        Remove-Item "$env:TEMP\ts.msi" -Force
+        Write-Host "Tailscale instalado." -ForegroundColor Green
+
+    - name: Start Tailscale
+      shell: pwsh
+      env:
+        TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        INSTANCE: ${{ github.event.inputs.instance_number }}
+      run: |
+        Write-Host "Iniciando Tailscale..." -ForegroundColor Green
+        & "C:\Program Files\Tailscale\tailscale.exe" up `
+          --authkey=$env:TS_AUTHKEY `
+          --hostname="enigmano-$env:INSTANCE-${{ github.run_id }}" `
+          --accept-routes `
+          --accept-dns=false `
+          --netfilter-mode=off
+
+        Start-Sleep -Seconds 20
+
+        Write-Host "`n=== STATUS TAILSCALE ===" -ForegroundColor Cyan
+        & "C:\Program Files\Tailscale\tailscale.exe" status
+
+        $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+        Write-Host "IP Tailscale: $ip" -ForegroundColor Green
+
+    - name: Install Applications
+      shell: pwsh
+      run: |
+        Write-Host "Instalando apps..." -ForegroundColor Green
+
+        $apps = @(
+          @{ name="Chrome";    url="https://dl.google.com/chrome/install/latest/chrome_installer.exe"; args="/silent /install" },
+          @{ name="7-Zip";     url="https://www.7-zip.org/a/7z2409-x64.exe";                           args="/S" },
+          @{ name="VLC";       url="https://get.videolan.org/vlc/last/win64/vlc-3.0.21-win64.exe";     args="/L=1033 /S" },
+          @{ name="Notepad++"; url="https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.7/npp.8.7.Installer.x64.exe"; args="/S" }
+        )
+
+        foreach ($app in $apps) {
+          Write-Host "Baixando $($app.name)..." -ForegroundColor Cyan
+          $path = "$env:TEMP\$($app.name).exe"
+          try {
+            Invoke-WebRequest -Uri $app.url -OutFile $path -UseBasicParsing
+            Start-Process -FilePath $path -ArgumentList $app.args -Wait
+            Remove-Item $path -Force
+            Write-Host "$($app.name) instalado." -ForegroundColor Green
+          } catch {
+            Write-Host "Falha ao instalar $($app.name): $_" -ForegroundColor Red
+          }
+        }
+
+    - name: Connection Details
+      shell: pwsh
+      run: |
+        Write-Host ""
+        Write-Host "==================================================" -ForegroundColor Cyan
+        Write-Host "             PC VIRTUAL - ACESSO                  " -ForegroundColor Cyan
+        Write-Host "==================================================" -ForegroundColor Cyan
+        Write-Host " Host (Tailscale) : $env:TAILSCALE_IP" -ForegroundColor White
+        Write-Host " Porta RDP        : 3389" -ForegroundColor White
+        Write-Host " Usuario          : pcuser" -ForegroundColor White
+        Write-Host " Senha            : (definida em RDP_PASSWORD)" -ForegroundColor White
+        Write-Host " Resolucao        : ${{ github.event.inputs.resolution }}" -ForegroundColor White
+        Write-Host " Backup salva     : Desktop, Documents, Downloads, Pictures, etc." -ForegroundColor Yellow
+        Write-Host " Backup roda      : a cada 5 minutos" -ForegroundColor Yellow
+        Write-Host "==================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "INSTRUCOES:" -ForegroundColor Yellow
+        Write-Host " 1. Instale o Tailscale no seu aparelho" -ForegroundColor White
+        Write-Host " 2. Faca login com a MESMA conta" -ForegroundColor White
+        Write-Host " 3. Abra o Remote Desktop e conecte no IP acima" -ForegroundColor White
+        Write-Host " 4. Backup automatico roda a cada 5 minutos" -ForegroundColor Yellow
+        Write-Host " 5. Wallpaper salvo em: C:\Users\<user>\Backup\.wallpaper-info.txt" -ForegroundColor Yellow
+
+    - name: Network Latency Test
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        Write-Host "`n=== TESTE DE LATENCIA ===" -ForegroundColor Cyan
+        foreach ($ip in @("1.1.1.1","8.8.8.8")) {
+          $r = Test-Connection -ComputerName $ip -Count 4 -ErrorAction SilentlyContinue
+          if ($r) {
+            $avg = ($r | Measure-Object -Property ResponseTime -Average).Average
+            Write-Host "  $ip : $([math]::Round($avg,2)) ms (media)" -ForegroundColor Green
+          }
+        }
+
+    - name: Keep Session Alive
+      shell: pwsh
+      env:
+        TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        INSTANCE: ${{ github.event.inputs.instance_number }}
+        SESSION_HOURS: ${{ github.event.inputs.session_hours }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        Write-Host "`n=== SESSAO ATIVA ===" -ForegroundColor Green
+        Write-Host "Backup automatico a cada 5 minutos." -ForegroundColor Yellow
+        Write-Host "Salve arquivos em: Desktop, Documents ou Downloads" -ForegroundColor Yellow
+
+        $pastas = @("Backup","Desktop","Documents","Downloads","Pictures","Videos","Music")
+        $extsIgnorar = @(".crdownload", ".part", ".tmp", ".partial", ".download")
+
+        function Save-WallpaperInfo {
+          $info = "$env:USERPROFILE\Backup\.wallpaper-info.txt"
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\Backup" | Out-Null
+          try {
+            $wallpaper = (Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name WallPaper -ErrorAction SilentlyContinue).WallPaper
+            if ($wallpaper -and (Test-Path $wallpaper)) {
+              Set-Content -Path $info -Value $wallpaper -Encoding UTF8
+              Write-Host "  Wallpaper salvo: $wallpaper" -ForegroundColor DarkGray
+            }
+          } catch {
+            Write-Host "  Nao foi possivel salvar info do wallpaper." -ForegroundColor DarkYellow
+          }
+        }
+
+        function Save-Backup {
+          $staging = "$env:TEMP\staging"
+          if (Test-Path $staging) { Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          Save-WallpaperInfo
+
+          $total = 0
+          foreach ($p in $pastas) {
+            $origem = "$env:USERPROFILE\$p"
+            if (Test-Path $origem) {
+              $destino = "$staging\$p"
+              New-Item -ItemType Directory -Force -Path $destino | Out-Null
+
+              Get-ChildItem -Path $origem -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $extsIgnorar -notcontains $_.Extension.ToLower() } |
+                ForEach-Object {
+                  $rel = $_.FullName.Substring($origem.Length).TrimStart("\")
+                  $destFile = Join-Path $destino $rel
+                  $destDir = Split-Path $destFile -Parent
+                  if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+                  Copy-Item -Path $_.FullName -Destination $destFile -Force -ErrorAction SilentlyContinue
+                  $total++
+                }
+
+              $c = (Get-ChildItem "$destino" -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+              Write-Host "  $p : $c arquivos" -ForegroundColor DarkGray
+            }
+          }
+
+          if ($total -eq 0) { Write-Host "  Nada para salvar." -ForegroundColor Yellow; return }
+
+          $zip = "$env:TEMP\backup.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force -ErrorAction SilentlyContinue
+
+          $sizeMB = [math]::Round((Get-Item $zip).Length / 1MB, 2)
+          if ($sizeMB -gt 1900) {
+            Write-Host "  AVISO: ${sizeMB}MB excede limite de 2GB. Backup ignorado." -ForegroundColor Red
+            Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+            return
+          }
+
+          $tag = "backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+          gh release create $tag $zip --title "Backup $tag" --notes "$total arquivos, ${sizeMB}MB" --latest 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Backup OK: $tag ($total arquivos, $sizeMB MB)" -ForegroundColor Cyan
+          } else {
+            Write-Host "  Falha ao salvar backup." -ForegroundColor Red
+          }
+          Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $endTime = (Get-Date).AddHours([int]$env:SESSION_HOURS)
+        $lastBackup = Get-Date
+        $counter = 0
+
+        while ((Get-Date) -lt $endTime) {
+          $counter++
+          $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes)
+
+          if (((Get-Date) - $lastBackup).TotalMinutes -ge 5) {
+            Write-Host "`n[$(Get-Date -Format 'HH:mm:ss')] Backup periodico..." -ForegroundColor Yellow
+            Save-Backup
+            $lastBackup = Get-Date
+          }
+
+          try {
+            $status = & "C:\Program Files\Tailscale\tailscale.exe" status 2>&1
+            if ($status -match "Logged out|stopped") { throw "off" }
+          } catch {
+            Write-Host "  Tailscale caiu. Reconectando..." -ForegroundColor Red
+            & "C:\Program Files\Tailscale\tailscale.exe" up `
+              --authkey=$env:TS_AUTHKEY `
+              --hostname="enigmano-$env:INSTANCE-${{ github.run_id }}" `
+              --accept-routes `
+              --accept-dns=false `
+              --netfilter-mode=off
+          }
+
+          Write-Host "[$counter] $(Get-Date -Format 'HH:mm:ss') - Restam ${remaining}min" -ForegroundColor Green
           Start-Sleep -Seconds 60
         }
+
+        Write-Host "`nSessao terminando. Backup final..." -ForegroundColor Yellow
+        Save-Backup
+        Write-Host "Sessao encerrada." -ForegroundColor Green
