@@ -21,15 +21,6 @@ on:
         required: true
         default: '6'
         type: string
-      resolution:
-        description: 'Resolucao'
-        required: true
-        default: '1920x1080'
-        type: choice
-        options:
-          - '1920x1080'
-          - '2560x1440'
-          - '3840x2160'
 
 permissions:
   contents: write
@@ -50,7 +41,6 @@ jobs:
         Write-Host "Instance: ${{ github.event.inputs.instance_number }}" -ForegroundColor Yellow
         Write-Host "Restore Backup: ${{ github.event.inputs.restore_backup }}" -ForegroundColor Yellow
         Write-Host "Session Hours: ${{ github.event.inputs.session_hours }}" -ForegroundColor Yellow
-        Write-Host "Resolution: ${{ github.event.inputs.resolution }}" -ForegroundColor Yellow
         Write-Host "Runner: $env:RUNNER_NAME" -ForegroundColor Cyan
         Write-Host ""
         Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, TotalPhysicalMemory
@@ -95,29 +85,6 @@ jobs:
         }
 
         Write-Host "Rede otimizada." -ForegroundColor Green
-
-    - name: Set Resolution
-      shell: pwsh
-      continue-on-error: true
-      env:
-        RESOLUTION: ${{ github.event.inputs.resolution }}
-      run: |
-        Write-Host "Configurando resolucao: $env:RESOLUTION" -ForegroundColor Cyan
-
-        $parts = $env:RESOLUTION.Split("x")
-        $w = [int]$parts[0]
-        $h = [int]$parts[1]
-
-        try {
-          Invoke-WebRequest -Uri "https://github.com/MathewSachin/QRes/raw/master/QRes.exe" -OutFile "$env:TEMP\QRes.exe" -UseBasicParsing
-          & "$env:TEMP\QRes.exe" /x:$w /y:$h
-          Start-Sleep -Seconds 2
-          Write-Host "Resolucao aplicada com QRes." -ForegroundColor Green
-        } catch {
-          Write-Host "QRes falhou. Runner sem display virtual, resolucao fica no padrao." -ForegroundColor Yellow
-        }
-
-        New-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -Value 96 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
 
     - name: Restore Backup
       if: ${{ github.event.inputs.restore_backup == 'yes' }}
@@ -200,24 +167,19 @@ jobs:
         Write-Host "Tailscale instalado." -ForegroundColor Green
 
     - name: Start Tailscale
+      uses: tailscale/github-action@v3
+      with:
+        oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+        oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+        tags: tag:ci
+        hostname: enigmano-${{ github.event.inputs.instance_number }}-${{ github.run_id }}
+        args: --accept-routes --accept-dns=false --netfilter-mode=off
+
+    - name: Get Tailscale IP
       shell: pwsh
-      env:
-        TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        INSTANCE: ${{ github.event.inputs.instance_number }}
       run: |
-        Write-Host "Iniciando Tailscale..." -ForegroundColor Green
-        & "C:\Program Files\Tailscale\tailscale.exe" up `
-          --authkey=$env:TS_AUTHKEY `
-          --hostname="enigmano-$env:INSTANCE-${{ github.run_id }}" `
-          --accept-routes `
-          --accept-dns=false `
-          --netfilter-mode=off
-
-        Start-Sleep -Seconds 20
-
         Write-Host "`n=== STATUS TAILSCALE ===" -ForegroundColor Cyan
         & "C:\Program Files\Tailscale\tailscale.exe" status
-
         $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
         echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
         Write-Host "IP Tailscale: $ip" -ForegroundColor Green
@@ -258,7 +220,6 @@ jobs:
         Write-Host " Porta RDP        : 3389" -ForegroundColor White
         Write-Host " Usuario          : pcuser" -ForegroundColor White
         Write-Host " Senha            : (definida em RDP_PASSWORD)" -ForegroundColor White
-        Write-Host " Resolucao        : ${{ github.event.inputs.resolution }}" -ForegroundColor White
         Write-Host " Backup salva     : Desktop, Documents, Downloads, Pictures, etc." -ForegroundColor Yellow
         Write-Host " Backup roda      : a cada 5 minutos" -ForegroundColor Yellow
         Write-Host "==================================================" -ForegroundColor Cyan
@@ -269,19 +230,6 @@ jobs:
         Write-Host " 3. Abra o Remote Desktop e conecte no IP acima" -ForegroundColor White
         Write-Host " 4. Backup automatico roda a cada 5 minutos" -ForegroundColor Yellow
         Write-Host " 5. Wallpaper salvo em: C:\Users\<user>\Backup\.wallpaper-info.txt" -ForegroundColor Yellow
-
-    - name: Network Latency Test
-      shell: pwsh
-      continue-on-error: true
-      run: |
-        Write-Host "`n=== TESTE DE LATENCIA ===" -ForegroundColor Cyan
-        foreach ($ip in @("1.1.1.1","8.8.8.8")) {
-          $r = Test-Connection -ComputerName $ip -Count 4 -ErrorAction SilentlyContinue
-          if ($r) {
-            $avg = ($r | Measure-Object -Property ResponseTime -Average).Average
-            Write-Host "  $ip : $([math]::Round($avg,2)) ms (media)" -ForegroundColor Green
-          }
-        }
 
     - name: Keep Session Alive
       shell: pwsh
@@ -379,17 +327,14 @@ jobs:
             $lastBackup = Get-Date
           }
 
-          try {
-            $status = & "C:\Program Files\Tailscale\tailscale.exe" status 2>&1
-            if ($status -match "Logged out|stopped") { throw "off" }
-          } catch {
-            Write-Host "  Tailscale caiu. Reconectando..." -ForegroundColor Red
-            & "C:\Program Files\Tailscale\tailscale.exe" up `
-              --authkey=$env:TS_AUTHKEY `
-              --hostname="enigmano-$env:INSTANCE-${{ github.run_id }}" `
-              --accept-routes `
-              --accept-dns=false `
-              --netfilter-mode=off
+          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+          if (Test-Path $tsPath) {
+            try {
+              $status = & $tsPath status 2>&1
+              if ($status -match "Logged out|stopped") { throw "off" }
+            } catch {
+              Write-Host "  Tailscale caiu. Status atual: $status" -ForegroundColor Yellow
+            }
           }
 
           Write-Host "[$counter] $(Get-Date -Format 'HH:mm:ss') - Restam ${remaining}min" -ForegroundColor Green
